@@ -1,0 +1,592 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Excel 數據分析儀表板</title>
+    
+    <!-- 1. 載入 Tailwind CSS (樣式) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- 2. 載入 Excel 解析庫 (XLSX) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+
+    <!-- 3. 載入 Babel (讓瀏覽器看不懂的 JSX 變成看得懂的 JavaScript) -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- 4. 載入 html2canvas (用於截圖下載) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+
+    <!-- 5. Import Map: 解決模組載入路徑問題的關鍵 -->
+    <script type="importmap">
+    {
+        "imports": {
+            "react": "https://esm.sh/react@18.2.0",
+            "react-dom": "https://esm.sh/react-dom@18.2.0",
+            "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
+            "recharts": "https://esm.sh/recharts@2.12.2?external=react,react-dom",
+            "lucide-react": "https://esm.sh/lucide-react@0.344.0?external=react,react-dom"
+        }
+    }
+    </script>
+
+    <!-- 定義一些自定義動畫樣式 -->
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&display=swap');
+        body { font-family: 'Noto Sans TC', sans-serif; }
+        .animate-fade-in { animation: fadeIn 0.5s ease-out; }
+        .animate-fade-in-up { animation: fadeInUp 0.5s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes fadeInUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-900">
+    
+    <div id="root"></div>
+
+    <!-- 6. React 應用程式邏輯 -->
+    <script type="text/babel" data-type="module">
+        import React, { useState, useMemo, useEffect, useRef } from 'react';
+        import { createRoot } from 'react-dom/client';
+        
+        import { 
+            BarChart, Bar, LineChart, Line, PieChart, Pie, Cell,
+            XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer 
+        } from 'recharts';
+        
+        import { 
+            Upload, FileSpreadsheet, X, BarChart3, PieChart as PieIcon, 
+            LineChart as LineIcon, Table, AlertCircle, TrendingUp, DollarSign, 
+            Hash, Calculator, ListOrdered, Download
+        } from 'lucide-react';
+
+        const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884d8', '#82ca9d', '#ffc658'];
+
+        // 修改 Card 元件以支援 ref (為了截圖功能)
+        const Card = React.forwardRef(({ children, className = "" }, ref) => (
+            <div ref={ref} className={`bg-white rounded-xl shadow-sm border border-slate-200 ${className}`}>
+                {children}
+            </div>
+        ));
+
+        const App = () => {
+            const [fileData, setFileData] = useState([]);
+            const [columns, setColumns] = useState([]);
+            const [fileName, setFileName] = useState("");
+            const [isDragOver, setIsDragOver] = useState(false);
+            const [loading, setLoading] = useState(false);
+            const [error, setError] = useState(null);
+            
+            // 用來參照圖表 Card 的 ref
+            const chartRef = useRef(null);
+            
+            // 狀態：XLSX 是否載入完成
+            const [isXLSXReady, setIsXLSXReady] = useState(false);
+
+            // 分析設定狀態
+            const [selectedXAxis, setSelectedXAxis] = useState("");
+            const [selectedYAxis, setSelectedYAxis] = useState("");
+            const [chartType, setChartType] = useState("bar"); 
+            const [aggregationType, setAggregationType] = useState("sum");
+
+            useEffect(() => {
+                if (window.XLSX) {
+                    setIsXLSXReady(true);
+                } else {
+                    const timer = setInterval(() => {
+                        if (window.XLSX) {
+                            setIsXLSXReady(true);
+                            clearInterval(timer);
+                        }
+                    }, 500);
+                    return () => clearInterval(timer);
+                }
+            }, []);
+
+            const handleFile = async (file) => {
+                if (!file) return;
+                
+                if (!window.XLSX) {
+                    setError("Excel 解析庫尚未載入，請重新整理頁面。");
+                    return;
+                }
+                
+                const validExts = ['.xlsx', '.xls', '.csv'];
+                const fileExt = file.name.substring(file.name.lastIndexOf('.')).toLowerCase();
+                
+                if (!validExts.includes(fileExt)) {
+                    setError("請上傳 Excel (.xlsx, .xls) 或 CSV 檔案");
+                    return;
+                }
+
+                setLoading(true);
+                setError(null);
+                setFileName(file.name);
+
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    try {
+                        const data = e.target.result;
+                        const workbook = window.XLSX.read(data, { type: 'binary' });
+                        const sheetName = workbook.SheetNames[0];
+                        const sheet = workbook.Sheets[sheetName];
+                        const parsedData = window.XLSX.utils.sheet_to_json(sheet, { defval: "" });
+
+                        if (parsedData.length === 0) {
+                            setError("檔案中沒有數據");
+                            setLoading(false);
+                            return;
+                        }
+
+                        const cols = Object.keys(parsedData[0]);
+                        setFileData(parsedData);
+                        setColumns(cols);
+
+                        const stringCol = cols.find(key => typeof parsedData[0][key] === 'string') || cols[0];
+                        const numCol = cols.find(key => typeof parsedData[0][key] === 'number') || cols[1] || cols[0];
+                        
+                        setSelectedXAxis(stringCol);
+                        setSelectedYAxis(numCol);
+                        setLoading(false);
+                    } catch (err) {
+                        console.error(err);
+                        setError("解析檔案時發生錯誤，請確認檔案格式正確。");
+                        setLoading(false);
+                    }
+                };
+                reader.readAsBinaryString(file);
+            };
+
+            const onDrop = (e) => {
+                e.preventDefault();
+                setIsDragOver(false);
+                if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                    handleFile(e.dataTransfer.files[0]);
+                }
+            };
+
+            const handleReset = () => {
+                setFileData([]);
+                setColumns([]);
+                setFileName("");
+                setError(null);
+                setAggregationType("sum");
+            };
+
+            // 下載圖表功能
+            const handleDownloadChart = async () => {
+                if (chartRef.current && window.html2canvas) {
+                    try {
+                        // 使用 html2canvas 截取圖表 Card
+                        const canvas = await window.html2canvas(chartRef.current, {
+                            backgroundColor: '#ffffff', // 確保背景是白色的
+                            scale: 2 // 提高解析度 (Retina 支援)
+                        });
+                        
+                        // 建立下載連結
+                        const link = document.createElement('a');
+                        link.download = `分析圖表-${fileName.split('.')[0]}-${Date.now()}.png`;
+                        link.href = canvas.toDataURL('image/png');
+                        link.click();
+                    } catch (err) {
+                        console.error("截圖失敗:", err);
+                        alert("圖表下載失敗，請稍後再試。");
+                    }
+                } else {
+                    alert("截圖功能尚未準備好");
+                }
+            };
+
+            const chartData = useMemo(() => {
+                if (!fileData.length || !selectedXAxis) return [];
+                if (aggregationType === 'sum' && !selectedYAxis) return [];
+
+                const aggregation = {};
+                
+                fileData.forEach(row => {
+                    const key = row[selectedXAxis];
+                    if (key !== undefined && key !== "" && key !== null) {
+                        if (aggregationType === 'count') {
+                            aggregation[key] = (aggregation[key] || 0) + 1;
+                        } else {
+                            const value = parseFloat(row[selectedYAxis]) || 0;
+                            aggregation[key] = (aggregation[key] || 0) + value;
+                        }
+                    }
+                });
+
+                let result = Object.keys(aggregation).map(key => ({
+                    name: key,
+                    value: aggregation[key]
+                }));
+
+                result.sort((a, b) => b.value - a.value);
+                return result.slice(0, 50); 
+            }, [fileData, selectedXAxis, selectedYAxis, aggregationType]);
+
+            const stats = useMemo(() => {
+                if (!fileData.length) return null;
+                
+                if (aggregationType === 'count') {
+                    const values = chartData.map(d => d.value);
+                    if (values.length === 0) return null;
+
+                    const totalRecords = fileData.length;
+                    const maxCount = Math.max(...values);
+                    const minCount = Math.min(...values);
+                    const avgCount = totalRecords / values.length;
+
+                    return {
+                        label: "資料筆數 (Count)",
+                        total: totalRecords.toLocaleString(),
+                        avg: avgCount.toLocaleString(undefined, { maximumFractionDigits: 1 }),
+                        max: maxCount.toLocaleString(),
+                        min: minCount.toLocaleString(),
+                        count: fileData.length
+                    };
+                } 
+                
+                if (!selectedYAxis) return null;
+                const values = fileData.map(row => parseFloat(row[selectedYAxis]) || 0);
+                const total = values.reduce((a, b) => a + b, 0);
+                const avg = total / values.length;
+                const max = Math.max(...values);
+                const min = Math.min(...values);
+
+                return {
+                    label: `數值加總 (${selectedYAxis})`,
+                    total: total.toLocaleString(undefined, { maximumFractionDigits: 2 }),
+                    avg: avg.toLocaleString(undefined, { maximumFractionDigits: 2 }),
+                    max: max.toLocaleString(undefined, { maximumFractionDigits: 2 }),
+                    min: min.toLocaleString(undefined, { maximumFractionDigits: 2 }),
+                    count: fileData.length
+                };
+            }, [fileData, selectedYAxis, chartData, aggregationType]);
+
+            return (
+                <div className="min-h-screen bg-slate-50 text-slate-900 font-sans pb-10">
+                    {/* 導航列 */}
+                    <nav className="bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between sticky top-0 z-10 shadow-sm">
+                        <div className="flex items-center gap-3">
+                            <div className="p-2 bg-blue-600 rounded-lg text-white">
+                                <BarChart3 size={24} />
+                            </div>
+                            <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-700 to-cyan-600">
+                                數據分析儀表板
+                            </h1>
+                        </div>
+                        {fileName && (
+                            <div className="flex items-center gap-4">
+                                <div className="hidden md:flex items-center gap-2 px-3 py-1.5 bg-slate-100 rounded-full text-sm text-slate-600 border border-slate-200">
+                                    <FileSpreadsheet size={16} />
+                                    <span className="truncate max-w-[200px]">{fileName}</span>
+                                </div>
+                                <button 
+                                    onClick={handleReset}
+                                    className="text-sm text-red-600 hover:text-red-700 font-medium px-3 py-1.5 hover:bg-red-50 rounded-lg transition-colors"
+                                >
+                                    重新上傳
+                                </button>
+                            </div>
+                        )}
+                    </nav>
+
+                    <main className="p-4 md:p-8 max-w-7xl mx-auto">
+                        {fileData.length === 0 ? (
+                            <div className="flex flex-col items-center justify-center min-h-[60vh] animate-fade-in-up">
+                                <div className="w-full max-w-xl">
+                                    <Card className="p-8 md:p-12 text-center transition-all duration-300 hover:shadow-md">
+                                        <div 
+                                            className={`border-2 border-dashed rounded-xl p-10 transition-colors cursor-pointer
+                                                ${isDragOver ? 'border-blue-500 bg-blue-50' : 'border-slate-300 hover:border-blue-400 hover:bg-slate-50'}
+                                                ${error ? 'border-red-300 bg-red-50' : ''}
+                                            `}
+                                            onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
+                                            onDragLeave={() => setIsDragOver(false)}
+                                            onDrop={onDrop}
+                                        >
+                                            <div className="flex flex-col items-center gap-4">
+                                                <div className={`p-4 rounded-full ${isDragOver ? 'bg-blue-100 text-blue-600' : 'bg-slate-100 text-slate-400'}`}>
+                                                    {loading ? <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div> : <Upload size={32} />}
+                                                </div>
+                                                
+                                                <div className="space-y-2">
+                                                    <h3 className="text-xl font-semibold text-slate-800">上傳 Excel 檔案</h3>
+                                                    <p className="text-slate-500 text-sm">拖曳檔案至此，或點擊下方按鈕</p>
+                                                    <p className="text-slate-400 text-xs mt-2">支援 .xlsx, .xls 格式</p>
+                                                </div>
+
+                                                <label className={`mt-4 px-6 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg cursor-pointer transition-transform active:scale-95 shadow-lg shadow-blue-600/20`}>
+                                                    選擇檔案
+                                                    <input 
+                                                        type="file" 
+                                                        accept=".xlsx, .xls" 
+                                                        className="hidden" 
+                                                        onChange={(e) => handleFile(e.target.files[0])}
+                                                    />
+                                                </label>
+                                            </div>
+                                        </div>
+
+                                        {error && (
+                                            <div className="mt-6 flex items-center justify-center gap-2 text-red-600 bg-red-50 p-3 rounded-lg border border-red-100">
+                                                <AlertCircle size={18} />
+                                                <span className="text-sm font-medium">{error}</span>
+                                            </div>
+                                        )}
+                                    </Card>
+
+                                    <div className="mt-8 grid grid-cols-1 md:grid-cols-3 gap-4 text-center">
+                                        {[
+                                            { icon: <TrendingUp size={20} />, title: "即時視覺化", desc: "自動生成多種圖表" },
+                                            { icon: <Hash size={20} />, title: "靈活計算", desc: "支援加總與筆數統計" },
+                                            { icon: <Table size={20} />, title: "隱私安全", desc: "數據僅在瀏覽器處理" },
+                                        ].map((feature, i) => (
+                                            <div key={i} className="flex flex-col items-center gap-2 p-4 text-slate-600">
+                                                <div className="p-2 bg-white rounded-lg shadow-sm text-blue-600">{feature.icon}</div>
+                                                <h4 className="font-semibold text-slate-800">{feature.title}</h4>
+                                                <p className="text-xs text-slate-400">{feature.desc}</p>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="space-y-6 animate-fade-in">
+                                {/* 控制面板 */}
+                                <Card className="p-6">
+                                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 items-end">
+                                        {/* 1. X軸選擇 */}
+                                        <div className="space-y-2">
+                                            <label className="text-sm font-medium text-slate-700 flex items-center gap-2">
+                                                <Table size={16} /> 分組依據 (X軸/類別)
+                                            </label>
+                                            <select 
+                                                value={selectedXAxis} 
+                                                onChange={(e) => setSelectedXAxis(e.target.value)}
+                                                className="w-full px-4 py-2.5 rounded-lg border border-slate-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-slate-50"
+                                            >
+                                                {columns.map(col => <option key={col} value={col}>{col}</option>)}
+                                            </select>
+                                        </div>
+
+                                        {/* 2. 計算方式選擇 */}
+                                        <div className="space-y-2">
+                                            <label className="text-sm font-medium text-slate-700 flex items-center gap-2">
+                                                <Calculator size={16} /> 計算方式
+                                            </label>
+                                            <div className="flex bg-slate-100 p-1 rounded-lg">
+                                                <button
+                                                    onClick={() => setAggregationType('sum')}
+                                                    className={`flex-1 flex items-center justify-center gap-2 px-3 py-1.5 text-sm rounded-md transition-all ${aggregationType === 'sum' ? 'bg-white shadow-sm text-blue-600 font-medium' : 'text-slate-500 hover:text-slate-700'}`}
+                                                >
+                                                    <DollarSign size={14} /> 數值加總
+                                                </button>
+                                                <button
+                                                    onClick={() => setAggregationType('count')}
+                                                    className={`flex-1 flex items-center justify-center gap-2 px-3 py-1.5 text-sm rounded-md transition-all ${aggregationType === 'count' ? 'bg-white shadow-sm text-blue-600 font-medium' : 'text-slate-500 hover:text-slate-700'}`}
+                                                >
+                                                    <ListOrdered size={14} /> 資料筆數
+                                                </button>
+                                            </div>
+                                        </div>
+
+                                        {/* 3. Y軸選擇 (僅在 Sum 模式有效) */}
+                                        <div className="space-y-2">
+                                            <label className={`text-sm font-medium flex items-center gap-2 transition-colors ${aggregationType === 'count' ? 'text-slate-400' : 'text-slate-700'}`}>
+                                                <DollarSign size={16} /> 數值欄位 (Y軸)
+                                            </label>
+                                            <select 
+                                                value={selectedYAxis} 
+                                                onChange={(e) => setSelectedYAxis(e.target.value)}
+                                                disabled={aggregationType === 'count'}
+                                                className={`w-full px-4 py-2.5 rounded-lg border focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors
+                                                    ${aggregationType === 'count' 
+                                                        ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed' 
+                                                        : 'bg-slate-50 border-slate-300'}`}
+                                            >
+                                                {columns.map(col => <option key={col} value={col}>{col}</option>)}
+                                            </select>
+                                        </div>
+
+                                        {/* 4. 圖表類型 */}
+                                        <div className="space-y-2">
+                                            <label className="text-sm font-medium text-slate-700 flex items-center gap-2">
+                                                圖表類型
+                                            </label>
+                                            <div className="flex bg-slate-100 p-1 rounded-lg">
+                                                {[
+                                                    { type: 'bar', icon: BarChart3, label: '長條圖' },
+                                                    { type: 'line', icon: LineIcon, label: '折線圖' },
+                                                    { type: 'pie', icon: PieIcon, label: '圓餅圖' },
+                                                ].map(t => (
+                                                    <button
+                                                        key={t.type}
+                                                        onClick={() => setChartType(t.type)}
+                                                        className={`flex-1 p-2 rounded-md flex justify-center items-center transition-all ${chartType === t.type ? 'bg-white shadow-sm text-blue-600' : 'text-slate-500 hover:text-slate-700'}`}
+                                                        title={t.label}
+                                                    >
+                                                        <t.icon size={20} />
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    </div>
+                                </Card>
+
+                                {/* 統計指標 Cards */}
+                                {stats && (
+                                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                                        <Card className="p-5 border-l-4 border-l-blue-500">
+                                            <p className="text-sm text-slate-500 mb-1">
+                                                {aggregationType === 'count' ? '總筆數 (Total Count)' : '總和 (Sum)'}
+                                            </p>
+                                            <p className="text-2xl font-bold text-slate-800">{stats.total}</p>
+                                        </Card>
+                                        <Card className="p-5 border-l-4 border-l-green-500">
+                                            <p className="text-sm text-slate-500 mb-1">
+                                                {aggregationType === 'count' ? '平均每組筆數 (Avg)' : '平均值 (Avg)'}
+                                            </p>
+                                            <p className="text-2xl font-bold text-slate-800">{stats.avg}</p>
+                                        </Card>
+                                        <Card className="p-5 border-l-4 border-l-amber-500">
+                                            <p className="text-sm text-slate-500 mb-1">
+                                                {aggregationType === 'count' ? '單組最多筆數 (Max)' : '最大值 (Max)'}
+                                            </p>
+                                            <p className="text-2xl font-bold text-slate-800">{stats.max}</p>
+                                        </Card>
+                                        <Card className="p-5 border-l-4 border-l-purple-500">
+                                            <p className="text-sm text-slate-500 mb-1">
+                                                {aggregationType === 'count' ? '單組最少筆數 (Min)' : '最小值 (Min)'}
+                                            </p>
+                                            <p className="text-2xl font-bold text-slate-800">{stats.min}</p>
+                                        </Card>
+                                    </div>
+                                )}
+
+                                {/* 圖表區 */}
+                                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                                    <Card ref={chartRef} className="col-span-1 lg:col-span-2 p-6 min-h-[400px]">
+                                        <div className="flex items-center justify-between mb-6">
+                                            <h3 className="text-lg font-bold text-slate-800">
+                                                {selectedXAxis} 
+                                                <span className="text-slate-400 mx-2">vs</span> 
+                                                {aggregationType === 'count' ? '資料筆數 (Count)' : selectedYAxis}
+                                            </h3>
+                                            <button
+                                                data-html2canvas-ignore="true"
+                                                onClick={handleDownloadChart}
+                                                className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-slate-500 bg-slate-100 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                                                title="下載圖表為 PNG"
+                                            >
+                                                <Download size={16} />
+                                                下載圖表
+                                            </button>
+                                        </div>
+                                        <div className="h-[350px] w-full">
+                                            <ResponsiveContainer width="100%" height="100%">
+                                                {chartType === 'bar' && (
+                                                    <BarChart data={chartData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
+                                                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E2E8F0" />
+                                                        <XAxis dataKey="name" stroke="#64748B" fontSize={12} tickLine={false} axisLine={false} />
+                                                        <YAxis stroke="#64748B" fontSize={12} tickLine={false} axisLine={false} />
+                                                        <Tooltip 
+                                                            contentStyle={{ backgroundColor: '#fff', borderRadius: '8px', border: '1px solid #e2e8f0', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
+                                                            cursor={{ fill: '#F1F5F9' }}
+                                                        />
+                                                        <Legend />
+                                                        <Bar 
+                                                            dataKey="value" 
+                                                            name={aggregationType === 'count' ? "筆數" : selectedYAxis} 
+                                                            fill="#3B82F6" 
+                                                            radius={[4, 4, 0, 0]} 
+                                                        />
+                                                    </BarChart>
+                                                )}
+                                                {chartType === 'line' && (
+                                                    <LineChart data={chartData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
+                                                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E2E8F0" />
+                                                        <XAxis dataKey="name" stroke="#64748B" fontSize={12} />
+                                                        <YAxis stroke="#64748B" fontSize={12} />
+                                                        <Tooltip contentStyle={{ backgroundColor: '#fff', borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} />
+                                                        <Legend />
+                                                        <Line 
+                                                            type="monotone" 
+                                                            dataKey="value" 
+                                                            name={aggregationType === 'count' ? "筆數" : selectedYAxis} 
+                                                            stroke="#3B82F6" 
+                                                            strokeWidth={3} 
+                                                            dot={{ r: 4 }} 
+                                                            activeDot={{ r: 6 }} 
+                                                        />
+                                                    </LineChart>
+                                                )}
+                                                {chartType === 'pie' && (
+                                                    <PieChart>
+                                                        <Pie
+                                                            data={chartData}
+                                                            cx="50%"
+                                                            cy="50%"
+                                                            labelLine={false}
+                                                            label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                                                            outerRadius={120}
+                                                            fill="#8884d8"
+                                                            dataKey="value"
+                                                            nameKey="name"
+                                                        >
+                                                            {chartData.map((entry, index) => (
+                                                                <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                                                            ))}
+                                                        </Pie>
+                                                        <Tooltip />
+                                                        <Legend />
+                                                    </PieChart>
+                                                )}
+                                            </ResponsiveContainer>
+                                        </div>
+                                    </Card>
+                                    
+                                    {/* 數據預覽區 */}
+                                    <Card className="col-span-1 p-0 overflow-hidden flex flex-col h-[460px]">
+                                        <div className="p-4 border-b border-slate-100 bg-slate-50/50">
+                                            <h3 className="font-bold text-slate-800 flex items-center gap-2">
+                                                <Table size={18} className="text-slate-400" />
+                                                數據預覽 (前 20 筆)
+                                            </h3>
+                                        </div>
+                                        <div className="overflow-auto flex-1">
+                                            <table className="w-full text-sm text-left">
+                                                <thead className="text-xs text-slate-500 uppercase bg-slate-50 sticky top-0">
+                                                    <tr>
+                                                        {columns.map(col => (
+                                                            <th key={col} className="px-4 py-3 font-medium whitespace-nowrap">{col}</th>
+                                                        ))}
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    {fileData.slice(0, 20).map((row, i) => (
+                                                        <tr key={i} className="border-b border-slate-100 hover:bg-slate-50">
+                                                            {columns.map(col => (
+                                                                <td key={`${i}-${col}`} className="px-4 py-2.5 text-slate-600 whitespace-nowrap">
+                                                                    {row[col]}
+                                                                </td>
+                                                            ))}
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </Card>
+                                </div>
+                            </div>
+                        )}
+                    </main>
+                </div>
+            );
+        };
+
+        const root = createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
