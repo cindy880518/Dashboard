@@ -1,0 +1,903 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Excel 數據分析儀表板 v2.6 - 動態指標版</title>
+    
+    <!-- 1. 載入 Tailwind CSS (樣式) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- 2. 載入 Excel 解析庫 (XLSX) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+
+    <!-- 3. 載入 Babel -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- 4. 載入 html2canvas (截圖下載) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+
+    <!-- 5. Import Map -->
+    <script type="importmap">
+    {
+        "imports": {
+            "react": "https://esm.sh/react@18.2.0",
+            "react-dom": "https://esm.sh/react-dom@18.2.0",
+            "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
+            "recharts": "https://esm.sh/recharts@2.12.2?external=react,react-dom",
+            "lucide-react": "https://esm.sh/lucide-react@0.344.0?external=react,react-dom"
+        }
+    }
+    </script>
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&display=swap');
+        body { font-family: 'Noto Sans TC', sans-serif; }
+        .animate-fade-in { animation: fadeIn 0.5s ease-out; }
+        .animate-fade-in-up { animation: fadeInUp 0.5s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes fadeInUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+        
+        /* 自定義捲軸樣式 */
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: #f1f5f9; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-900">
+    
+    <div id="root"></div>
+
+    <script type="text/babel" data-type="module">
+        import React, { useState, useMemo, useEffect, useRef } from 'react';
+        import { createRoot } from 'react-dom/client';
+        import { 
+            BarChart, Bar, LineChart, Line, PieChart, Pie, Cell, AreaChart, Area,
+            XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer 
+        } from 'recharts';
+        import { 
+            Upload, FileSpreadsheet, X, BarChart3, PieChart as PieIcon, 
+            LineChart as LineIcon, Table, AlertCircle, TrendingUp, DollarSign, 
+            Hash, Calculator, ListOrdered, Download, Calendar, Layers, Activity, Filter, Tag, Check, ChevronDown, RefreshCw
+        } from 'lucide-react';
+
+        const COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899', '#6366F1', '#14B8A6', '#F97316'];
+
+        // ----------------------------------------------------------------------
+        // 多選元件 (MultiSelect Component)
+        // ----------------------------------------------------------------------
+        const MultiSelect = ({ options, value, onChange, placeholder = "請選擇...", disabled = false }) => {
+            const [isOpen, setIsOpen] = useState(false);
+            const containerRef = useRef(null);
+
+            useEffect(() => {
+                const handleClickOutside = (event) => {
+                    if (containerRef.current && !containerRef.current.contains(event.target)) {
+                        setIsOpen(false);
+                    }
+                };
+                document.addEventListener("mousedown", handleClickOutside);
+                return () => document.removeEventListener("mousedown", handleClickOutside);
+            }, []);
+
+            const toggleOption = (option) => {
+                const newValue = value.includes(option)
+                    ? value.filter(v => v !== option)
+                    : [...value, option];
+                onChange(newValue);
+            };
+
+            const handleSelectAll = () => {
+                if (value.length === options.length) {
+                    onChange([]);
+                } else {
+                    onChange([...options]);
+                }
+            };
+
+            return (
+                <div className={`relative w-full ${disabled ? 'opacity-50 pointer-events-none' : ''}`} ref={containerRef}>
+                    <div
+                        className={`w-full p-2 rounded-lg border bg-white text-sm cursor-pointer flex justify-between items-center ${isOpen ? 'ring-2 ring-blue-500 border-blue-500' : 'border-slate-300'}`}
+                        onClick={() => !disabled && setIsOpen(!isOpen)}
+                    >
+                        <span className="truncate text-slate-700">
+                            {value.length === 0 
+                                ? <span className="text-slate-400">{placeholder}</span>
+                                : value.length === options.length && options.length > 0
+                                    ? <span className="font-medium text-blue-600">全選 ({options.length})</span>
+                                    : <span className="font-medium text-blue-600">已選 {value.length} 項</span>
+                            }
+                        </span>
+                        <ChevronDown size={16} className="text-slate-400" />
+                    </div>
+                    
+                    {isOpen && (
+                        <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-lg shadow-xl max-h-60 overflow-y-auto">
+                            {options.length > 0 ? (
+                                <>
+                                    <div 
+                                        className="px-3 py-2 border-b border-slate-100 hover:bg-slate-50 cursor-pointer font-bold text-blue-600 text-xs tracking-wider uppercase"
+                                        onClick={handleSelectAll}
+                                    >
+                                        {value.length === options.length ? "取消全選" : "全選 (Select All)"}
+                                    </div>
+                                    {options.map(opt => (
+                                        <div 
+                                            key={opt} 
+                                            className="px-3 py-2 flex items-center gap-2 hover:bg-slate-50 cursor-pointer border-b border-slate-50 last:border-0"
+                                            onClick={() => toggleOption(opt)}
+                                        >
+                                            <div className={`w-4 h-4 rounded border flex items-center justify-center ${value.includes(opt) ? 'bg-blue-600 border-blue-600' : 'border-slate-300'}`}>
+                                                {value.includes(opt) && <Check size={12} className="text-white" />}
+                                            </div>
+                                            <span className="text-sm text-slate-700 break-all">{opt}</span>
+                                        </div>
+                                    ))}
+                                </>
+                            ) : (
+                                <div className="p-3 text-slate-400 text-center text-sm">無選項</div>
+                            )}
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        // ----------------------------------------------------------------------
+        // 輔助函數
+        // ----------------------------------------------------------------------
+        const parseExcelDate = (value) => {
+            if (!value) return null;
+            if (typeof value === 'number' && value > 20000 && value < 60000) {
+                const date = new Date(Math.round((value - 25569) * 86400 * 1000));
+                return date;
+            }
+            const date = new Date(value);
+            return isNaN(date.getTime()) ? null : date;
+        };
+
+        const formatDate = (date, type) => {
+            if (!date) return "未知";
+            const y = date.getFullYear();
+            const m = String(date.getMonth() + 1).padStart(2, '0');
+            const d = String(date.getDate()).padStart(2, '0');
+            if (type === 'month') return `${y}-${m}`;
+            if (type === 'day') return `${y}-${m}-${d}`;
+            return `${y}-${m}-${d}`;
+        };
+
+        const Card = React.forwardRef(({ children, className = "" }, ref) => (
+            <div ref={ref} className={`bg-white rounded-xl shadow-sm border border-slate-200 ${className}`}>
+                {children}
+            </div>
+        ));
+
+        // ----------------------------------------------------------------------
+        // App
+        // ----------------------------------------------------------------------
+        const App = () => {
+            const [fileData, setFileData] = useState([]);
+            const [columns, setColumns] = useState([]);
+            const [fileName, setFileName] = useState("");
+            const [isDragOver, setIsDragOver] = useState(false);
+            const [loading, setLoading] = useState(false);
+            const [error, setError] = useState(null);
+            
+            const chartRef = useRef(null);
+            const [isXLSXReady, setIsXLSXReady] = useState(false);
+
+            // 篩選狀態
+            const [dateFilterCol, setDateFilterCol] = useState("");
+            const [startDate, setStartDate] = useState("");
+            const [endDate, setEndDate] = useState("");
+            const [categoryFilterCol, setCategoryFilterCol] = useState("");
+            const [selectedCategoryValues, setSelectedCategoryValues] = useState([]); 
+
+            // 分析設定狀態
+            const [selectedXAxis, setSelectedXAxis] = useState(""); 
+            const [selectedYAxis, setSelectedYAxis] = useState(""); 
+            const [selectedSeries, setSelectedSeries] = useState(""); 
+            const [chartType, setChartType] = useState("bar"); 
+            const [aggregationType, setAggregationType] = useState("sum");
+            const [dateGrouping, setDateGrouping] = useState("none"); 
+
+            useEffect(() => {
+                if (window.XLSX) {
+                    setIsXLSXReady(true);
+                } else {
+                    const timer = setInterval(() => {
+                        if (window.XLSX) {
+                            setIsXLSXReady(true);
+                            clearInterval(timer);
+                        }
+                    }, 500);
+                    return () => clearInterval(timer);
+                }
+            }, []);
+
+            const handleFile = async (file) => {
+                if (!file) return;
+                if (!window.XLSX) {
+                    setError("Excel 解析庫尚未載入，請重新整理頁面。");
+                    return;
+                }
+                const validExts = ['.xlsx', '.xls', '.csv'];
+                const fileExt = file.name.substring(file.name.lastIndexOf('.')).toLowerCase();
+                
+                if (!validExts.includes(fileExt)) {
+                    setError("請上傳 Excel (.xlsx, .xls) 或 CSV 檔案");
+                    return;
+                }
+
+                setLoading(true);
+                setError(null);
+                setFileName(file.name);
+
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    try {
+                        const data = e.target.result;
+                        const workbook = window.XLSX.read(data, { type: 'binary' });
+                        const sheetName = workbook.SheetNames[0];
+                        const sheet = workbook.Sheets[sheetName];
+                        const parsedData = window.XLSX.utils.sheet_to_json(sheet, { defval: "" });
+
+                        if (parsedData.length === 0) {
+                            setError("檔案中沒有數據");
+                            setLoading(false);
+                            return;
+                        }
+
+                        const cols = Object.keys(parsedData[0]);
+                        setFileData(parsedData);
+                        setColumns(cols);
+
+                        // 智能預設
+                        const dateCol = cols.find(key => {
+                            const val = parsedData[0][key];
+                            return typeof val === 'string' && (val.includes('-') || val.includes('/')) || (typeof val === 'number' && val > 40000);
+                        });
+                        
+                        const numCol = cols.find(key => typeof parsedData[0][key] === 'number') || cols[0];
+                        const catCol = cols.find(key => key !== dateCol && typeof parsedData[0][key] === 'string');
+
+                        setSelectedXAxis(dateCol || cols[0]);
+                        setSelectedYAxis(numCol);
+                        if (catCol) {
+                            setSelectedSeries(catCol);
+                            setCategoryFilterCol(catCol); 
+                        }
+                        
+                        if (dateCol) {
+                            setDateGrouping("month");
+                            setDateFilterCol(dateCol);
+                            let minT = Infinity;
+                            let maxT = -Infinity;
+                            parsedData.forEach(row => {
+                                const d = parseExcelDate(row[dateCol]);
+                                if(d) {
+                                    const t = d.getTime();
+                                    if(t < minT) minT = t;
+                                    if(t > maxT) maxT = t;
+                                }
+                            });
+                            if (minT !== Infinity && maxT !== -Infinity) {
+                                setStartDate(new Date(minT).toISOString().split('T')[0]);
+                                setEndDate(new Date(maxT).toISOString().split('T')[0]);
+                            }
+                        }
+
+                        setLoading(false);
+                    } catch (err) {
+                        console.error(err);
+                        setError("解析檔案時發生錯誤，請確認檔案格式正確。");
+                        setLoading(false);
+                    }
+                };
+                reader.readAsBinaryString(file);
+            };
+
+            const onDrop = (e) => {
+                e.preventDefault();
+                setIsDragOver(false);
+                if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                    handleFile(e.dataTransfer.files[0]);
+                }
+            };
+
+            const handleDownloadChart = async () => {
+                if (chartRef.current && window.html2canvas) {
+                    try {
+                        const canvas = await window.html2canvas(chartRef.current, {
+                            backgroundColor: '#ffffff',
+                            scale: 2
+                        });
+                        const link = document.createElement('a');
+                        link.download = `分析圖表-${fileName.split('.')[0]}.png`;
+                        link.href = canvas.toDataURL('image/png');
+                        link.click();
+                    } catch (err) {
+                        console.error(err);
+                        alert("截圖失敗");
+                    }
+                }
+            };
+
+            const handleReset = () => {
+                setFileData([]);
+                setColumns([]);
+                setFileName("");
+                setError(null);
+                setAggregationType("sum");
+                setSelectedSeries("");
+                setDateGrouping("none");
+                
+                setDateFilterCol("");
+                setStartDate("");
+                setEndDate("");
+                setCategoryFilterCol("");
+                setSelectedCategoryValues([]);
+            };
+
+            // 計算類別篩選的可選值
+            const categoryOptions = useMemo(() => {
+                if (!fileData.length || !categoryFilterCol) return [];
+                const values = new Set();
+                fileData.forEach(row => {
+                    const val = row[categoryFilterCol];
+                    if (val !== undefined && val !== null && val !== "") {
+                        values.add(String(val));
+                    }
+                });
+                return Array.from(values).sort();
+            }, [fileData, categoryFilterCol]);
+
+            // 1. 篩選數據 (Filtering)
+            const filteredData = useMemo(() => {
+                if (!fileData.length) return [];
+                
+                const start = (dateFilterCol && startDate) ? new Date(startDate).setHours(0,0,0,0) : -Infinity;
+                const end = (dateFilterCol && endDate) ? new Date(endDate).setHours(23,59,59,999) : Infinity;
+
+                return fileData.filter(row => {
+                    // 1. 日期篩選
+                    if (dateFilterCol && (startDate || endDate)) {
+                        const val = row[dateFilterCol];
+                        const date = parseExcelDate(val);
+                        if (!date) return false; 
+                        const time = date.getTime();
+                        if (time < start || time > end) return false;
+                    }
+
+                    // 2. 多重類別篩選
+                    if (categoryFilterCol && selectedCategoryValues.length > 0) {
+                        const val = String(row[categoryFilterCol]);
+                        if (!selectedCategoryValues.includes(val)) return false;
+                    }
+
+                    return true;
+                });
+            }, [fileData, dateFilterCol, startDate, endDate, categoryFilterCol, selectedCategoryValues]);
+
+            // 2. 核心運算邏輯：Pivot Data
+            const processedData = useMemo(() => {
+                if (!filteredData.length || !selectedXAxis) return { data: [], seriesKeys: [] };
+
+                const groupedData = {};
+                const seriesSet = new Set();
+
+                filteredData.forEach(row => {
+                    let rawX = row[selectedXAxis];
+                    let xKey = rawX;
+
+                    if (dateGrouping !== 'none') {
+                        const dateObj = parseExcelDate(rawX);
+                        if (dateObj) {
+                            xKey = formatDate(dateObj, dateGrouping);
+                        } else {
+                            xKey = String(rawX); 
+                        }
+                    }
+
+                    if (xKey === undefined || xKey === null || xKey === "") return;
+
+                    if (!groupedData[xKey]) {
+                        groupedData[xKey] = { name: xKey, total: 0 };
+                    }
+
+                    let value = 1;
+                    if (aggregationType === 'sum') {
+                        value = parseFloat(row[selectedYAxis]) || 0;
+                    }
+
+                    if (selectedSeries && row[selectedSeries]) {
+                        const seriesName = row[selectedSeries];
+                        seriesSet.add(seriesName);
+                        groupedData[xKey][seriesName] = (groupedData[xKey][seriesName] || 0) + value;
+                    } else {
+                        groupedData[xKey]['value'] = (groupedData[xKey]['value'] || 0) + value;
+                    }
+
+                    groupedData[xKey].total += value;
+                });
+
+                let result = Object.values(groupedData);
+                
+                if (dateGrouping !== 'none') {
+                    result.sort((a, b) => a.name.localeCompare(b.name));
+                } else {
+                    result.sort((a, b) => b.total - a.total);
+                }
+
+                return { 
+                    data: result.slice(0, 100),
+                    seriesKeys: Array.from(seriesSet) 
+                };
+            }, [filteredData, selectedXAxis, selectedYAxis, selectedSeries, aggregationType, dateGrouping]);
+
+            // 3. 統計數據計算 (動態更新)
+            const stats = useMemo(() => {
+                if (!filteredData.length) return null;
+                
+                const totalRevenue = filteredData.reduce((acc, row) => {
+                    return acc + (parseFloat(row[selectedYAxis]) || 0);
+                }, 0);
+
+                const totalOrders = filteredData.length;
+
+                const uniqueDaysSet = new Set();
+                let isDateAxis = false;
+                
+                filteredData.forEach(row => {
+                    const val = row[selectedXAxis];
+                    const dateObj = parseExcelDate(val);
+                    if (dateObj) {
+                        uniqueDaysSet.add(formatDate(dateObj, 'day'));
+                        isDateAxis = true;
+                    } else {
+                        uniqueDaysSet.add(val);
+                    }
+                });
+                
+                const distinctCount = uniqueDaysSet.size || 1;
+                const daysLabel = isDateAxis ? "天" : "個類別";
+
+                const avgDailyRevenue = totalRevenue / distinctCount; 
+                const avgOrderValue = totalOrders > 0 ? totalRevenue / totalOrders : 0;     
+                const avgDailyOrders = totalOrders / distinctCount;   
+                
+                const { data } = processedData;
+                const maxGroupValue = data.length ? Math.max(...data.map(d => d.total)) : 0;
+
+                const hasActiveFilter = (dateFilterCol && (startDate || endDate)) || (categoryFilterCol && selectedCategoryValues.length > 0);
+
+                return {
+                    yAxisLabel: selectedYAxis, // 動態 Y 軸名稱
+                    hasFilter: hasActiveFilter,
+                    totalRevenue: totalRevenue.toLocaleString(undefined, { maximumFractionDigits: 0 }),
+                    totalOrders: totalOrders.toLocaleString(),
+                    distinctCount: distinctCount.toLocaleString(),
+                    daysLabel,
+                    avgDailyRevenue: avgDailyRevenue.toLocaleString(undefined, { maximumFractionDigits: 0 }),
+                    avgOrderValue: avgOrderValue.toLocaleString(undefined, { maximumFractionDigits: 0 }),
+                    avgDailyOrders: avgDailyOrders.toLocaleString(undefined, { maximumFractionDigits: 1 }),
+                    maxGroupValue: maxGroupValue.toLocaleString(undefined, { maximumFractionDigits: 0 }),
+                };
+            }, [filteredData, selectedXAxis, selectedYAxis, processedData, dateFilterCol, startDate, endDate, categoryFilterCol, selectedCategoryValues]);
+
+            return (
+                <div className="min-h-screen bg-slate-50 text-slate-900 font-sans pb-10">
+                    <nav className="bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between sticky top-0 z-20 shadow-sm">
+                        <div className="flex items-center gap-3">
+                            <div className="p-2 bg-blue-600 rounded-lg text-white">
+                                <BarChart3 size={24} />
+                            </div>
+                            <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-700 to-cyan-600">
+                                Excel 數據分析儀表板 v2.6
+                            </h1>
+                        </div>
+                        {fileName && (
+                            <div className="flex items-center gap-4">
+                                <span className="hidden md:inline-flex items-center gap-2 px-3 py-1.5 bg-slate-100 rounded-full text-sm font-medium text-slate-600 border border-slate-200">
+                                    <FileSpreadsheet size={16} /> {fileName}
+                                </span>
+                                <button onClick={handleReset} className="text-sm text-red-600 hover:text-red-700 font-medium hover:underline flex items-center gap-1">
+                                    <RefreshCw size={14} /> 重新上傳
+                                </button>
+                            </div>
+                        )}
+                    </nav>
+
+                    <main className="p-4 md:p-8 max-w-7xl mx-auto">
+                        {fileData.length === 0 ? (
+                            <div className="flex flex-col items-center justify-center min-h-[60vh] animate-fade-in-up">
+                                <Card className="p-10 text-center max-w-xl w-full hover:shadow-md transition-all">
+                                    <div 
+                                        className={`border-2 border-dashed rounded-xl p-12 cursor-pointer transition-colors
+                                            ${isDragOver ? 'border-blue-500 bg-blue-50' : 'border-slate-300 hover:border-blue-400 hover:bg-slate-50'}
+                                        `}
+                                        onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
+                                        onDragLeave={() => setIsDragOver(false)}
+                                        onDrop={onDrop}
+                                    >
+                                        <div className="flex flex-col items-center gap-4">
+                                            <div className="p-4 bg-blue-100 text-blue-600 rounded-full">
+                                                {loading ? <div className="animate-spin h-8 w-8 border-2 border-blue-600 border-t-transparent rounded-full"/> : <Upload size={32} />}
+                                            </div>
+                                            <div>
+                                                <h3 className="text-xl font-bold text-slate-800">上傳 Excel 進行分析</h3>
+                                                <p className="text-slate-500 mt-2">支援拖曳或點擊上傳 (.xlsx, .csv)</p>
+                                            </div>
+                                            <label className="mt-4 px-6 py-2 bg-blue-600 text-white rounded-lg cursor-pointer hover:bg-blue-700 transition-colors shadow-lg shadow-blue-600/20">
+                                                選擇檔案
+                                                <input type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={(e) => handleFile(e.target.files[0])} />
+                                            </label>
+                                        </div>
+                                    </div>
+                                    {error && <div className="mt-4 text-red-500 flex items-center justify-center gap-2"><AlertCircle size={16}/>{error}</div>}
+                                </Card>
+                            </div>
+                        ) : (
+                            <div className="space-y-6 animate-fade-in">
+                                {/* 控制面板區 */}
+                                <Card className="p-6 sticky top-20 z-10 shadow-lg border-blue-100 space-y-4">
+                                    
+                                    {/* 區域 1: 篩選設定 */}
+                                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 pb-4 border-b border-slate-100">
+                                        
+                                        {/* 日期篩選 */}
+                                        <div className="space-y-1.5">
+                                            <label className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1">
+                                                <Filter size={14} /> 篩選 1：日期欄位
+                                            </label>
+                                            <select 
+                                                value={dateFilterCol} 
+                                                onChange={(e) => setDateFilterCol(e.target.value)} 
+                                                className="w-full p-2 rounded-lg border border-slate-300 bg-white text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                                            >
+                                                <option value="">(不篩選)</option>
+                                                {columns.map(c => <option key={c} value={c}>{c}</option>)}
+                                            </select>
+                                        </div>
+                                        <div className="space-y-1.5">
+                                            <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">日期範圍</label>
+                                            <div className="flex gap-2">
+                                                <input 
+                                                    type="date" 
+                                                    value={startDate}
+                                                    onChange={(e) => setStartDate(e.target.value)}
+                                                    className="w-full p-2 rounded-lg border border-slate-300 bg-white text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                                                />
+                                                <input 
+                                                    type="date" 
+                                                    value={endDate}
+                                                    onChange={(e) => setEndDate(e.target.value)}
+                                                    className="w-full p-2 rounded-lg border border-slate-300 bg-white text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                                                />
+                                            </div>
+                                        </div>
+
+                                        {/* 類別篩選 (多選升級版) */}
+                                        <div className="space-y-1.5">
+                                            <label className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1">
+                                                <Tag size={14} /> 篩選 2：渠道/類別
+                                            </label>
+                                            <select 
+                                                value={categoryFilterCol} 
+                                                onChange={(e) => {
+                                                    setCategoryFilterCol(e.target.value);
+                                                    setSelectedCategoryValues([]); // 換欄位時重置值
+                                                }} 
+                                                className="w-full p-2 rounded-lg border border-slate-300 bg-white text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                                            >
+                                                <option value="">(不篩選)</option>
+                                                {columns.map(c => <option key={c} value={c}>{c}</option>)}
+                                            </select>
+                                        </div>
+                                        <div className="space-y-1.5">
+                                            <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">選擇比較項目 (可複選)</label>
+                                            <MultiSelect 
+                                                options={categoryOptions}
+                                                value={selectedCategoryValues}
+                                                onChange={setSelectedCategoryValues}
+                                                disabled={!categoryFilterCol}
+                                                placeholder={!categoryFilterCol ? "請先選擇左側欄位" : "點擊選擇項目..."}
+                                            />
+                                        </div>
+                                    </div>
+
+                                    {/* 區域 2: 圖表設定 */}
+                                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 items-end">
+                                        {/* 1. X軸 (日期) */}
+                                        <div className="space-y-1.5">
+                                            <label className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1">
+                                                <Table size={14} /> 主軸 (X軸/日期)
+                                            </label>
+                                            <select value={selectedXAxis} onChange={(e) => setSelectedXAxis(e.target.value)} className="w-full p-2 rounded-lg border border-slate-300 bg-slate-50 text-sm focus:ring-2 focus:ring-blue-500 outline-none">
+                                                {columns.map(c => <option key={c} value={c}>{c}</option>)}
+                                            </select>
+                                        </div>
+
+                                        {/* 2. 日期分組 (Date Grouping) */}
+                                        <div className="space-y-1.5">
+                                            <label className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1">
+                                                <Calendar size={14} /> 時間粒度
+                                            </label>
+                                            <select value={dateGrouping} onChange={(e) => setDateGrouping(e.target.value)} className="w-full p-2 rounded-lg border border-slate-300 bg-slate-50 text-sm focus:ring-2 focus:ring-blue-500 outline-none">
+                                                <option value="none">原始資料 (不合併)</option>
+                                                <option value="month">按月合併 (YYYY-MM)</option>
+                                                <option value="day">按日合併 (YYYY-MM-DD)</option>
+                                            </select>
+                                        </div>
+
+                                        {/* 3. 系列分組 (Series) */}
+                                        <div className="space-y-1.5">
+                                            <label className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1">
+                                                <Layers size={14} /> 拆分系列 (比較用)
+                                            </label>
+                                            <select value={selectedSeries} onChange={(e) => setSelectedSeries(e.target.value)} className="w-full p-2 rounded-lg border border-slate-300 bg-slate-50 text-sm focus:ring-2 focus:ring-blue-500 outline-none">
+                                                <option value="">(無 - 單一數據)</option>
+                                                {columns.map(c => <option key={c} value={c}>{c}</option>)}
+                                            </select>
+                                            {categoryFilterCol && selectedSeries !== categoryFilterCol && (
+                                                <div className="text-[10px] text-orange-500">*建議選擇「{categoryFilterCol}」以比較篩選結果</div>
+                                            )}
+                                        </div>
+
+                                        {/* 4. Y軸 (數值) */}
+                                        <div className="space-y-1.5">
+                                            <label className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1">
+                                                <DollarSign size={14} /> 分析數值 (Y軸)
+                                            </label>
+                                            <div className="flex gap-2">
+                                                <select 
+                                                    value={selectedYAxis} 
+                                                    onChange={(e) => setSelectedYAxis(e.target.value)} 
+                                                    disabled={aggregationType === 'count'}
+                                                    className={`flex-1 p-2 rounded-lg border text-sm outline-none ${aggregationType === 'count' ? 'bg-slate-100 text-slate-400' : 'bg-slate-50 border-slate-300'}`}
+                                                >
+                                                    {columns.map(c => <option key={c} value={c}>{c}</option>)}
+                                                </select>
+                                                <button 
+                                                    onClick={() => setAggregationType(prev => prev === 'sum' ? 'count' : 'sum')}
+                                                    className={`px-3 py-1 rounded-lg border text-xs font-bold transition-all ${aggregationType === 'sum' ? 'bg-blue-50 text-blue-600 border-blue-200' : 'bg-green-50 text-green-600 border-green-200'}`}
+                                                    title={aggregationType === 'sum' ? '目前：數值加總' : '目前：計數'}
+                                                >
+                                                    {aggregationType === 'sum' ? 'SUM' : 'CNT'}
+                                                </button>
+                                            </div>
+                                        </div>
+
+                                        {/* 5. 圖表切換 */}
+                                        <div className="flex bg-slate-100 p-1 rounded-lg h-[38px]">
+                                            {[
+                                                { id: 'bar', icon: BarChart3 },
+                                                { id: 'line', icon: LineIcon },
+                                                { id: 'area', icon: TrendingUp }
+                                            ].map(t => (
+                                                <button 
+                                                    key={t.id}
+                                                    onClick={() => setChartType(t.id)}
+                                                    className={`flex-1 flex items-center justify-center rounded-md transition-all ${chartType === t.id ? 'bg-white shadow-sm text-blue-600' : 'text-slate-400 hover:text-slate-600'}`}
+                                                >
+                                                    <t.icon size={18} />
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+                                </Card>
+
+                                {/* 統計數據區 */}
+                                {stats && (
+                                    <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 relative">
+                                        {/* 第一排：基礎數據 */}
+                                        <Card className="p-4 border-l-4 border-l-blue-500">
+                                            <div className="text-slate-500 text-xs font-bold uppercase flex items-center gap-1">
+                                                <DollarSign size={14} /> 總{stats.yAxisLabel}
+                                            </div>
+                                            <div className="text-2xl font-bold text-slate-800 mt-1">{stats.totalRevenue}</div>
+                                            <div className="text-xs text-slate-400 mt-1">
+                                                {stats.hasFilter ? '經篩選累積總和' : '全部累積總和'}
+                                            </div>
+                                        </Card>
+                                        <Card className="p-4 border-l-4 border-l-indigo-500">
+                                            <div className="text-slate-500 text-xs font-bold uppercase flex items-center gap-1">
+                                                <ListOrdered size={14} /> 總訂單數 (Orders)
+                                            </div>
+                                            <div className="text-2xl font-bold text-slate-800 mt-1">{stats.totalOrders}</div>
+                                            <div className="text-xs text-slate-400 mt-1">
+                                                {stats.hasFilter ? '符合條件的筆數' : '總資料筆數'}
+                                            </div>
+                                        </Card>
+                                        <Card className="p-4 border-l-4 border-l-emerald-500">
+                                            <div className="text-slate-500 text-xs font-bold uppercase flex items-center gap-1">
+                                                <Activity size={14} /> 客單價 (平均{stats.yAxisLabel})
+                                            </div>
+                                            <div className="text-2xl font-bold text-emerald-600 mt-1">{stats.avgOrderValue}</div>
+                                            <div className="text-xs text-slate-400 mt-1">平均每筆 {stats.yAxisLabel}</div>
+                                        </Card>
+                                        <Card className="p-4 border-l-4 border-l-amber-500">
+                                            <div className="text-slate-500 text-xs font-bold uppercase flex items-center gap-1">
+                                                <Calendar size={14} /> 統計範圍
+                                            </div>
+                                            <div className="text-2xl font-bold text-slate-800 mt-1">{stats.distinctCount}</div>
+                                            <div className="text-xs text-slate-400 mt-1">共 {stats.daysLabel}</div>
+                                        </Card>
+
+                                        {/* 第二排：進階日均數據 */}
+                                        <Card className="p-4 border-l-4 border-l-cyan-500">
+                                            <div className="text-slate-500 text-xs font-bold uppercase">日均{stats.yAxisLabel}</div>
+                                            <div className="text-2xl font-bold text-slate-800 mt-1">{stats.avgDailyRevenue}</div>
+                                            <div className="text-xs text-slate-400 mt-1">平均每日 {stats.yAxisLabel}</div>
+                                        </Card>
+                                        <Card className="p-4 border-l-4 border-l-teal-500">
+                                            <div className="text-slate-500 text-xs font-bold uppercase">日均單量</div>
+                                            <div className="text-2xl font-bold text-slate-800 mt-1">{stats.avgDailyOrders}</div>
+                                            <div className="text-xs text-slate-400 mt-1">平均每日訂單</div>
+                                        </Card>
+                                        <Card className="p-4 border-l-4 border-l-rose-500">
+                                            <div className="text-slate-500 text-xs font-bold uppercase">單項最高</div>
+                                            <div className="text-2xl font-bold text-slate-800 mt-1">{stats.maxGroupValue}</div>
+                                            <div className="text-xs text-slate-400 mt-1">分組最高值</div>
+                                        </Card>
+                                        <Card className="p-4 bg-slate-50 border border-slate-200 flex flex-col justify-center items-center text-center">
+                                            <div className="text-sm font-medium text-slate-400">數據狀態</div>
+                                            <div className={`text-xs mt-1 font-bold ${stats.hasFilter ? 'text-blue-600' : 'text-slate-400'}`}>
+                                                {stats.hasFilter ? '已套用篩選' : '顯示全部數據'}
+                                            </div>
+                                        </Card>
+                                    </div>
+                                )}
+
+                                {/* 圖表區 */}
+                                <div className="grid grid-cols-1 gap-6">
+                                    <Card ref={chartRef} className="p-6 min-h-[500px]">
+                                        <div className="flex items-center justify-between mb-8">
+                                            <div>
+                                                <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+                                                    {selectedXAxis} 
+                                                    <span className="text-slate-400 text-sm">by</span>
+                                                    {dateGrouping !== 'none' ? dateGrouping === 'month' ? '月份' : '日期' : '原始'}
+                                                </h2>
+                                                <p className="text-sm text-slate-500 mt-1">
+                                                    Y軸: {aggregationType === 'count' ? '筆數' : selectedYAxis} 
+                                                    {selectedSeries && <span className="ml-2 px-2 py-0.5 bg-blue-100 text-blue-700 rounded-full text-xs">分組: {selectedSeries}</span>}
+                                                </p>
+                                            </div>
+                                            <button
+                                                data-html2canvas-ignore="true"
+                                                onClick={handleDownloadChart}
+                                                className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors"
+                                            >
+                                                <Download size={16} /> 下載圖表
+                                            </button>
+                                        </div>
+
+                                        <div className="h-[400px] w-full">
+                                            <ResponsiveContainer width="100%" height="100%">
+                                                {chartType === 'bar' ? (
+                                                    <BarChart data={processedData.data} margin={{ top: 10, right: 30, left: 10, bottom: 20 }}>
+                                                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                                                        <XAxis dataKey="name" stroke="#94a3b8" fontSize={12} tickLine={false} axisLine={false} dy={10} />
+                                                        <YAxis stroke="#94a3b8" fontSize={12} tickLine={false} axisLine={false} />
+                                                        <Tooltip 
+                                                            contentStyle={{ backgroundColor: '#fff', borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                                                            cursor={{ fill: '#f8fafc' }}
+                                                        />
+                                                        <Legend verticalAlign="top" height={36}/>
+                                                        {selectedSeries ? (
+                                                            processedData.seriesKeys.map((key, index) => (
+                                                                <Bar key={key} dataKey={key} stackId="a" fill={COLORS[index % COLORS.length]} radius={[0, 0, 0, 0]} />
+                                                            ))
+                                                        ) : (
+                                                            <Bar dataKey="value" fill="#3B82F6" radius={[4, 4, 0, 0]} name={aggregationType === 'count' ? '筆數' : selectedYAxis} />
+                                                        )}
+                                                    </BarChart>
+                                                ) : chartType === 'line' ? (
+                                                    <LineChart data={processedData.data} margin={{ top: 10, right: 30, left: 10, bottom: 20 }}>
+                                                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                                                        <XAxis dataKey="name" stroke="#94a3b8" fontSize={12} tickLine={false} axisLine={false} dy={10} />
+                                                        <YAxis stroke="#94a3b8" fontSize={12} tickLine={false} axisLine={false} />
+                                                        <Tooltip contentStyle={{ backgroundColor: '#fff', borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }} />
+                                                        <Legend verticalAlign="top" height={36}/>
+                                                        {selectedSeries ? (
+                                                            processedData.seriesKeys.map((key, index) => (
+                                                                <Line key={key} type="monotone" dataKey={key} stroke={COLORS[index % COLORS.length]} strokeWidth={2} dot={{r:3}} activeDot={{r:6}} />
+                                                            ))
+                                                        ) : (
+                                                            <Line type="monotone" dataKey="value" stroke="#3B82F6" strokeWidth={3} dot={{r:4}} activeDot={{r:6}} name={aggregationType === 'count' ? '筆數' : selectedYAxis} />
+                                                        )}
+                                                    </LineChart>
+                                                ) : (
+                                                    <AreaChart data={processedData.data} margin={{ top: 10, right: 30, left: 10, bottom: 20 }}>
+                                                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                                                        <XAxis dataKey="name" stroke="#94a3b8" fontSize={12} tickLine={false} axisLine={false} dy={10} />
+                                                        <YAxis stroke="#94a3b8" fontSize={12} tickLine={false} axisLine={false} />
+                                                        <Tooltip contentStyle={{ backgroundColor: '#fff', borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }} />
+                                                        <Legend verticalAlign="top" height={36}/>
+                                                        {selectedSeries ? (
+                                                            processedData.seriesKeys.map((key, index) => (
+                                                                <Area key={key} type="monotone" dataKey={key} stackId="1" stroke={COLORS[index % COLORS.length]} fill={COLORS[index % COLORS.length]} fillOpacity={0.6} />
+                                                            ))
+                                                        ) : (
+                                                            <Area type="monotone" dataKey="value" stroke="#3B82F6" fill="#3B82F6" fillOpacity={0.6} name={aggregationType === 'count' ? '筆數' : selectedYAxis} />
+                                                        )}
+                                                    </AreaChart>
+                                                )}
+                                            </ResponsiveContainer>
+                                        </div>
+                                    </Card>
+
+                                    {/* 詳細數據表 */}
+                                    <Card className="p-6 mt-2">
+                                        <div className="flex items-center justify-between mb-4">
+                                            <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+                                                <Table size={18} /> 詳細數據表
+                                            </h3>
+                                        </div>
+                                        <div className="overflow-x-auto max-h-[500px]">
+                                            <table className="w-full text-sm text-left border-collapse relative">
+                                                <thead className="text-xs text-slate-500 uppercase bg-slate-50 sticky top-0 shadow-sm z-10">
+                                                    <tr>
+                                                        <th className="px-4 py-3 font-bold border-b bg-slate-50">
+                                                            {selectedXAxis}
+                                                            {dateGrouping !== 'none' && <span className="text-xs font-normal normal-case ml-1">({dateGrouping === 'month' ? '月份' : '日期'})</span>}
+                                                        </th>
+                                                        {processedData.seriesKeys.length > 0 ? (
+                                                            processedData.seriesKeys.map(key => (
+                                                                <th key={key} className="px-4 py-3 font-bold border-b bg-slate-50">{key}</th>
+                                                            ))
+                                                        ) : (
+                                                            <th className="px-4 py-3 font-bold border-b bg-slate-50">{aggregationType === 'count' ? '筆數' : selectedYAxis}</th>
+                                                        )}
+                                                        {processedData.seriesKeys.length > 0 && (
+                                                            <th className="px-4 py-3 font-bold border-b text-right bg-slate-50">總計</th>
+                                                        )}
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    {processedData.data.map((row, i) => (
+                                                        <tr key={i} className="border-b border-slate-100 hover:bg-slate-50">
+                                                            <td className="px-4 py-3 font-medium text-slate-800">{row.name}</td>
+                                                            {processedData.seriesKeys.length > 0 ? (
+                                                                processedData.seriesKeys.map(key => (
+                                                                    <td key={key} className="px-4 py-3 text-slate-600">
+                                                                        {(row[key] || 0).toLocaleString()}
+                                                                    </td>
+                                                                ))
+                                                            ) : (
+                                                                <td className="px-4 py-3 text-slate-600">
+                                                                    {(row.value || 0).toLocaleString()}
+                                                                </td>
+                                                            )}
+                                                            {processedData.seriesKeys.length > 0 && (
+                                                                <td className="px-4 py-3 font-bold text-slate-800 text-right">
+                                                                    {row.total.toLocaleString()}
+                                                                </td>
+                                                            )}
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                            {processedData.data.length === 0 && (
+                                                <div className="p-8 text-center text-slate-400">
+                                                    沒有對應的分析數據
+                                                </div>
+                                            )}
+                                        </div>
+                                    </Card>
+                                </div>
+                            </div>
+                        )}
+                    </main>
+                </div>
+            );
+        };
+
+        const root = createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
